@@ -9,7 +9,7 @@ import os
 import altair as alt
 import numpy as np
 from sklearn.cluster import KMeans
-import subprocess  # Library tambahan untuk menjalankan konversi video
+import subprocess
 
 # ---------------------------------------------------------
 # 1. PAGE CONFIG
@@ -69,55 +69,77 @@ def load_yolo(path):
 model = load_yolo(selected_model_path)
 
 # ---------------------------------------------------------
-# FUNGSI BARU: KONVERSI VIDEO AGAR BISA DIPUTAR
+# FUNGSI UTILITAS
 # ---------------------------------------------------------
 def convert_video_to_h264(input_path):
     """Mengkonversi video MP4V ke H.264 agar bisa diputar di browser."""
     output_path = input_path.replace(".mp4", "_converted.mp4")
     try:
-        # Jalankan perintah FFmpeg untuk konversi
-        command = [
-            "ffmpeg", "-y", 
-            "-i", input_path, 
-            "-vcodec", "libx264", 
-            output_path
-        ]
+        command = ["ffmpeg", "-y", "-i", input_path, "-vcodec", "libx264", output_path]
         subprocess.run(command, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         return output_path
     except Exception as e:
-        print(f"Error converting video: {e}")
-        return input_path # Kembalikan file asli jika gagal
+        return input_path
 
 # ---------------------------------------------------------
-# 4. UPLOAD & PROCESS
+# 4. UPLOAD & PROCESS (DENGAN SESSION STATE / INGATAN)
 # ---------------------------------------------------------
 st.markdown("### 📂 Upload Video")
 video_file = st.file_uploader("", type=["mp4", "avi", "mov"])
 
 if video_file:
-    tfile_input = tempfile.NamedTemporaryFile(delete=False, suffix='.mp4')
-    tfile_input.write(video_file.read())
+    # 1. Buat ID Unik untuk file ini (Nama + Ukuran) biar Streamlit tau kalau filenya ganti
+    file_id = f"{video_file.name}-{video_file.size}-{model_choice}"
     
-    # Temp file untuk output awal (MP4V)
-    tfile_output = tempfile.NamedTemporaryFile(delete=False, suffix='.mp4')
-    output_path_full = tfile_output.name 
+    # 2. Cek apakah kita SUDAH pernah memproses file ini sebelumnya?
+    if "processed_data" not in st.session_state or st.session_state.get("current_file_id") != file_id:
+        
+        # === KALAU BELUM DIPROSES (ATAU GANTI FILE) ===
+        
+        tfile_input = tempfile.NamedTemporaryFile(delete=False, suffix='.mp4')
+        tfile_input.write(video_file.read())
+        
+        tfile_output = tempfile.NamedTemporaryFile(delete=False, suffix='.mp4')
+        output_path_full = tfile_output.name 
 
-    with st.status("🔄 Sedang memproses video...", expanded=True) as status:
-        st.write(f"Menggunakan model: **{model_choice}**")
-        st.write("Deteksi objek sedang berjalan...")
-        
-        # 1. PROSES VIDEO (Hasilnya mp4v - Hitam di browser)
-        df, final_vid_path, augmented, model_names = process_video(model, tfile_input.name, output_path=output_path_full)
-        
-        st.write("Mengkonversi format video agar kompatibel...")
-        
-        # 2. KONVERSI VIDEO (Hasilnya H.264 - Bisa diputar!)
-        playable_vid_path = convert_video_to_h264(final_vid_path)
-        
-        st.write("Menghitung statistik kepadatan...")
-        status.update(label="✅ Analisis Selesai!", state="complete", expanded=False)
+        with st.status("🔄 Sedang memproses video (Hanya sekali)...", expanded=True) as status:
+            st.write(f"Menggunakan model: **{model_choice}**")
+            st.write("Deteksi objek sedang berjalan...")
+            
+            # Proses Deteksi
+            df, final_vid_path, augmented, model_names = process_video(model, tfile_input.name, output_path=output_path_full)
+            
+            st.write("Mengkonversi format video...")
+            # Konversi Video
+            playable_vid_path = convert_video_to_h264(final_vid_path)
+            
+            st.write("Menyimpan hasil ke memori...")
+            
+            # SIMPAN HASIL KE SESSION STATE (INGATAN)
+            st.session_state["processed_data"] = df
+            st.session_state["original_video"] = tfile_input.name
+            st.session_state["playable_video"] = playable_vid_path
+            st.session_state["augmented_images"] = augmented
+            st.session_state["current_file_id"] = file_id
+            
+            status.update(label="✅ Analisis Selesai!", state="complete", expanded=False)
+            
+    else:
+        # === KALAU SUDAH PERNAH (CUMA KLIK DOWNLOAD) ===
+        # Langsung ambil dari ingatan, tidak perlu loading lagi!
+        st.success("✅ Data dimuat dari cache (Tidak perlu proses ulang).")
 
-    # Data Aggregation
+    # ---------------------------------------------------------
+    # 5. TAMPILKAN HASIL (DARI MEMORI SESSION STATE)
+    # ---------------------------------------------------------
+    
+    # Ambil data dari Session State
+    df = st.session_state["processed_data"]
+    playable_vid_path = st.session_state["playable_video"]
+    augmented = st.session_state["augmented_images"]
+    tfile_input_name = st.session_state["original_video"]
+
+    # Data Aggregation (Tetap dijalankan karena Analysis Choice bisa berubah tanpa reload berat)
     df_processed = df.copy()
     if group_key is not None:
         df_processed[group_key] = df_processed[group_key].round().astype(int)
@@ -186,7 +208,6 @@ if video_file:
             color=alt.Color("cluster:N", scale=cluster_colors, title="Status"), tooltip=["index", "total", "cluster"]
         ).properties(height=350).interactive()
         st.altair_chart(scatter_chart, use_container_width=True)
-        
         st.markdown("##### 📋 Distribusi Status Kepadatan")
         density_counts = scatter_df['cluster'].value_counts().reset_index()
         density_counts.columns = ['Status', 'Frekuensi Data']
@@ -202,22 +223,20 @@ if video_file:
     with tab1:
         st.markdown("### Perbandingan Video")
         col_vid1, col_vid2 = st.columns(2)
-        
         with col_vid1:
             st.markdown("**📹 Video Asli (Input)**")
-            st.video(tfile_input.name)
-            
+            st.video(tfile_input_name)
         with col_vid2:
             st.markdown("**🤖 Video Hasil Deteksi (Output)**")
-            # Menampilkan video yang SUDAH DIKONVERSI
             st.video(playable_vid_path)
 
         st.markdown("---")
         col_d1, col_d2 = st.columns(2)
         with col_d1:
+            # DOWNLOAD CSV (Tidak akan reload processing lagi)
             st.download_button("📄 Download Laporan CSV", df_processed.to_csv(index=False).encode("utf-8"), "traffic_report.csv", use_container_width=True)
         with col_d2:
-            # Tombol download tetap ambil yang playable
+            # DOWNLOAD VIDEO (Tidak akan reload processing lagi)
             with open(playable_vid_path, "rb") as f:
                 st.download_button("🎥 Download Video Hasil", f, file_name="video_output_yolo.mp4", use_container_width=True)
 
