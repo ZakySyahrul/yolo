@@ -9,6 +9,7 @@ import os
 import altair as alt
 import numpy as np
 from sklearn.cluster import KMeans
+import subprocess  # Library tambahan untuk menjalankan konversi video
 
 # ---------------------------------------------------------
 # 1. PAGE CONFIG
@@ -21,7 +22,7 @@ st.set_page_config(
 )
 
 # ---------------------------------------------------------
-# 2. CUSTOM CSS (NEON EFFECT)
+# 2. CUSTOM CSS
 # ---------------------------------------------------------
 st.markdown(
     """
@@ -54,9 +55,9 @@ with col_s1:
     model_choice = st.selectbox("🔍 Pilih Versi Model YOLO", ["YOLO v8 Final", "YOLO v12 Final"])
 with col_s2:
     analysis_choice = st.selectbox("⏱️ Granularitas Waktu Analisis", ["Per Frame", "Per Detik", "Per Menit", "Per Jam"])
-
 st.markdown("---")
 
+# Load Model
 model_path_map = {"YOLO v8 Final": "best_v8.pt", "YOLO v12 Final": "best_v12.pt"}
 group_key_map = {"Per Frame": None, "Per Detik": "second", "Per Menit": "minute", "Per Jam": "hour"}
 selected_model_path = model_path_map[model_choice]
@@ -65,24 +66,39 @@ group_key = group_key_map[analysis_choice]
 @st.cache_resource
 def load_yolo(path):
     return load_model(path)
-
 model = load_yolo(selected_model_path)
 
 # ---------------------------------------------------------
-# 4. UPLOAD SECTION
+# FUNGSI BARU: KONVERSI VIDEO AGAR BISA DIPUTAR
+# ---------------------------------------------------------
+def convert_video_to_h264(input_path):
+    """Mengkonversi video MP4V ke H.264 agar bisa diputar di browser."""
+    output_path = input_path.replace(".mp4", "_converted.mp4")
+    try:
+        # Jalankan perintah FFmpeg untuk konversi
+        command = [
+            "ffmpeg", "-y", 
+            "-i", input_path, 
+            "-vcodec", "libx264", 
+            output_path
+        ]
+        subprocess.run(command, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return output_path
+    except Exception as e:
+        print(f"Error converting video: {e}")
+        return input_path # Kembalikan file asli jika gagal
+
+# ---------------------------------------------------------
+# 4. UPLOAD & PROCESS
 # ---------------------------------------------------------
 st.markdown("### 📂 Upload Video")
 video_file = st.file_uploader("", type=["mp4", "avi", "mov"])
 
-# ---------------------------------------------------------
-# 5. MAIN PROCESSING LOGIC
-# ---------------------------------------------------------
 if video_file:
-    # Buat temp file untuk INPUT
     tfile_input = tempfile.NamedTemporaryFile(delete=False, suffix='.mp4')
     tfile_input.write(video_file.read())
     
-    # Buat temp file untuk OUTPUT (Fix Error Path)
+    # Temp file untuk output awal (MP4V)
     tfile_output = tempfile.NamedTemporaryFile(delete=False, suffix='.mp4')
     output_path_full = tfile_output.name 
 
@@ -90,8 +106,13 @@ if video_file:
         st.write(f"Menggunakan model: **{model_choice}**")
         st.write("Deteksi objek sedang berjalan...")
         
-        # PASSING output_path_full KE FUNGSI
+        # 1. PROSES VIDEO (Hasilnya mp4v - Hitam di browser)
         df, final_vid_path, augmented, model_names = process_video(model, tfile_input.name, output_path=output_path_full)
+        
+        st.write("Mengkonversi format video agar kompatibel...")
+        
+        # 2. KONVERSI VIDEO (Hasilnya H.264 - Bisa diputar!)
+        playable_vid_path = convert_video_to_h264(final_vid_path)
         
         st.write("Menghitung statistik kepadatan...")
         status.update(label="✅ Analisis Selesai!", state="complete", expanded=False)
@@ -107,7 +128,7 @@ if video_file:
 
     st.markdown("---")
 
-    # A. DASHBOARD METRICS
+    # DASHBOARD METRICS
     total_vehicles = df_processed["total"].sum()
     peak_traffic = df_processed["total"].max()
     avg_traffic = round(df_processed["total"].mean(), 1)
@@ -123,7 +144,7 @@ if video_file:
 
     st.markdown("---")
 
-    # B. CHARTS
+    # CHARTS
     row2_col1, row2_col2 = st.columns([1.5, 1])
     with row2_col1:
         st.markdown(f'#### 📈 Tren Lalu Lintas ({analysis_choice})')
@@ -148,7 +169,7 @@ if video_file:
 
     st.markdown("---")
 
-    # C. CLUSTERING
+    # CLUSTERING
     st.markdown('#### 🔵 Analisis Kepadatan (K-Means Clustering)')
     if len(df_processed) > 2: 
         X = df_processed["total"].values.reshape(-1, 1)
@@ -165,12 +186,17 @@ if video_file:
             color=alt.Color("cluster:N", scale=cluster_colors, title="Status"), tooltip=["index", "total", "cluster"]
         ).properties(height=350).interactive()
         st.altair_chart(scatter_chart, use_container_width=True)
+        
+        st.markdown("##### 📋 Distribusi Status Kepadatan")
+        density_counts = scatter_df['cluster'].value_counts().reset_index()
+        density_counts.columns = ['Status', 'Frekuensi Data']
+        st.dataframe(density_counts, hide_index=True, use_container_width=True)
     else:
         st.warning("Data terlalu sedikit untuk analisis clustering.")
     
     st.markdown("---")
 
-    # D. TABS (VISUALISASI & VIDEO HANDLING)
+    # TABS
     tab1, tab2, tab3 = st.tabs(["🎥 Visualisasi Hasil", "📋 Data Lengkap", "🧪 Augmentasi"])
 
     with tab1:
@@ -183,30 +209,17 @@ if video_file:
             
         with col_vid2:
             st.markdown("**🤖 Video Hasil Deteksi (Output)**")
-            
-            # --- ERROR HANDLING VIDEO ---
-            try:
-                # Cek apakah file ada dan tidak kosong (0 bytes)
-                if os.path.exists(final_vid_path) and os.path.getsize(final_vid_path) > 1000:
-                    # Baca sebagai binary agar Streamlit tidak bingung dengan Path
-                    with open(final_vid_path, 'rb') as v_file:
-                        video_bytes = v_file.read()
-                        st.video(video_bytes)
-                else:
-                    st.error("Video output gagal digenerate atau file rusak (Codec Issue). Tapi statistik di atas Valid!")
-            except Exception as e:
-                st.error(f"Gagal memuat video: {e}")
+            # Menampilkan video yang SUDAH DIKONVERSI
+            st.video(playable_vid_path)
 
         st.markdown("---")
         col_d1, col_d2 = st.columns(2)
         with col_d1:
             st.download_button("📄 Download Laporan CSV", df_processed.to_csv(index=False).encode("utf-8"), "traffic_report.csv", use_container_width=True)
         with col_d2:
-            try:
-                with open(final_vid_path, "rb") as f:
-                    st.download_button("🎥 Download Video Hasil", f, file_name="video_output_yolo.mp4", use_container_width=True)
-            except:
-                st.write("Video belum tersedia untuk download.")
+            # Tombol download tetap ambil yang playable
+            with open(playable_vid_path, "rb") as f:
+                st.download_button("🎥 Download Video Hasil", f, file_name="video_output_yolo.mp4", use_container_width=True)
 
     with tab2:
         st.dataframe(df_processed.style.background_gradient(cmap="YlGnBu", subset=["total"]), use_container_width=True)
