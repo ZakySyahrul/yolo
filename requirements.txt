@@ -1,6 +1,7 @@
-streamlit
+opencv-python-headless
 ultralytics
-opencv-python
-numpy
 pandas
-Pillow
+numpy
+altair
+scikit-learn
+streamlit
