@@ -89,7 +89,7 @@ def process_video(
     width  = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
-    fourcc = cv2.VideoWriter_fourcc(*"avc1")
+    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
     out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
 
     df_records = []
@@ -189,3 +189,4 @@ def process_video(
     df = pd.DataFrame(df_records).fillna(0)
 
     return df, output_path, augmented_samples, names_local
+
