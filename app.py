@@ -241,7 +241,10 @@ if video_file:
                 st.download_button("🎥 Download Video Hasil", f, file_name="video_output_yolo.mp4", use_container_width=True)
 
     with tab2:
-        st.dataframe(df_processed.style.background_gradient(cmap="YlGnBu", subset=["total"]), use_container_width=True)
+       st.dataframe(
+            df_processed.style.format(precision=0).background_gradient(cmap="YlGnBu", subset=["total"]), 
+            use_container_width=True
+        )
 
     with tab3:
         st.markdown("Sample frame hasil augmentasi:")
@@ -252,3 +255,4 @@ if video_file:
 
 st.markdown("---")
 st.caption("Developed by Team 5 FGD • Gunadarma University")
+
